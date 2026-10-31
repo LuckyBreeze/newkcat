@@ -1,0 +1,4 @@
+# Core R training uses the unchanged project dependencies (pip install -e .).
+# This converter is optional: only needed if preparing sr-SMILES for diagnosis.
+# Ordinary reaction-only preparation and the readout training do not need it.
+sr-smiles==0.2.0

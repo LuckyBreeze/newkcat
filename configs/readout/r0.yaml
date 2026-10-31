@@ -1,0 +1,37 @@
+# Reference: same architecture as previous R; this new runner records its own protocol.
+data:
+  samples: ../../data/sequence_full/samples.csv
+  features: ../../data/sequence/features.npz
+  missing_reaction: error
+model:
+  chemical_encoder: reaction_smiles
+  d_model: 128
+  nhead: 4
+  num_layers: 3
+  dim_feedforward: 512
+  head_dim: 256
+  chemical_dim: 256
+  max_length: 2048
+  dropout: 0.1
+  protein_readout: projected
+  readout: mean
+  num_queries: 4
+  condition_queries: false
+  fusion: concat
+training:
+  seed: 668
+  batch_size: 1
+  grad_accum_steps: 1
+  epochs: 150
+  patience: 20
+  lr: 0.0001
+  weight_decay: 0.0001
+  min_delta: 0.0
+  grad_clip: 5.0
+  num_workers: 0
+  num_threads: 1
+  device: cpu
+  deterministic: true
+encoder_checkpoint: null
+freeze_encoder: false
+output_dir: ../../runs/readout/r0

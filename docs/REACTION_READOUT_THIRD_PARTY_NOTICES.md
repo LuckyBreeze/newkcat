@@ -1,0 +1,89 @@
+# Third-party attribution
+
+The global-feature regression path and checkpoint key layout in
+`src/newkcat/model.py` follow the official CataPro `KcatModel`:
+<https://github.com/zchwang/CataPro/blob/master/inference/model.py>.
+The dataset/cache importer targets the official CataPro file formats:
+<https://github.com/zchwang/CataPro/blob/master/inference/generate_features.py>.
+The upstream work is *Robust enzyme discovery and engineering with deep learning
+using CataPro*, Nature Communications (2025),
+<https://doi.org/10.1038/s41467-025-58038-4>.
+
+Upstream CataPro MIT notice, retained here for the compatible implementation:
+
+> MIT License
+>
+> Copyright (c) 2024 zchwang
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+PyTorch, RDKit, NumPy, and the optional pandas dependency are installed separately
+and retain their respective licenses. This repository does not distribute their
+code, CataPro data, pretrained language-model weights, GNN-SOM weights, or a
+licensed reaction database. Users supply their own permitted data and weights.
+
+## Optional sr-SMILES converter
+
+The sequence preprocessing module calls the separately installed, MIT-licensed
+`sr-smiles==0.2.0` package: <https://github.com/heid-lab/sr-smiles>.
+The local decoder compatibility helper in `src/newkcat/sequence/sr_compat.py`
+adapts a small upstream chirality function; its MIT notice is retained below.
+No pretrained weights are distributed here. Cite the upstream
+representation work when using it: Sulpizio, Gerhaher, Heid and Jorner,
+*Bridging CGR representations and language models for reaction property prediction*,
+Digital Discovery (2026), <https://doi.org/10.1039/D6DD00120C>.
+
+The fixed character tokenizer, small Transformer, regression and MLM workflow in
+`src/newkcat/sequence/` are this repository's implementation. They are not the
+paper's pretrained BERT model or an exact reproduction of its experiments.
+
+Upstream sr-smiles notice, applicable to the adapted chirality helper:
+
+> MIT License
+>
+> Copyright (c) 2025 E. Heid
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+## Readout experiments
+
+The `sequence` package is carried forward from repository commit
+`abe40d643b37e39fbca54fa712642a04b4e6683c`. Its character Transformer is not
+a pretrained model from the sr-SMILES paper. The new query readout is inspired by
+attention pooling; it is not an exact Set Transformer or Retroformer reproduction.
+
+Set Transformer: https://proceedings.mlr.press/v97/lee19d.html
+Retroformer: https://proceedings.mlr.press/v162/wan22a.html
+LocalRetro: https://doi.org/10.1021/jacsau.1c00246
