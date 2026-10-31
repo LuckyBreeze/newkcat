@@ -1,0 +1,27 @@
+# All paths are absolute or relative to the launch working directory.
+# Do not run until real hits.csv and features.npz are prepared.
+data:
+  train_csv: data/pfam/train.csv
+  valid_csv: data/pfam/valid.csv
+  test_csv: data/pfam/test.csv
+  hits_csv: data/pfam/pfam_hits.csv
+  features_npz: data/pfam/features.npz
+  deepbgc_vectors: data/pfam/pfam2vec.csv.gz
+model:
+  source: deepbgc
+  variant: ordered
+  nmax_quantile: 0.99
+  nmax_cap: 32
+  min_train_pfam_fraction: 0.90
+  transformer_layers: 1
+  dropout: 0.1
+training:
+  seed: 17
+  batch_size: 64
+  epochs: 150
+  patience: 20
+  min_delta: 0.0001
+  lr: 0.0001
+  weight_decay: 0.00001
+  grad_clip: 5.0
+  device: auto
