@@ -1,0 +1,25 @@
+# Paths are relative to this YAML file. Synthetic pipeline check only.
+data:
+  samples: ../data/demo/samples.csv
+  features: ../data/demo/features.npz
+  centers: ../data/demo/centers.jsonl
+model:
+  mode: conditioned
+  hidden_dim: 32
+  num_layers: 2
+  local_dim: 16
+  dropout: 0.0
+  use_ec2: false
+training:
+  seed: 17
+  batch_size: 8
+  epochs: 4
+  patience: 3
+  lr: 0.001
+  weight_decay: 0.0001
+  grad_clip: 5.0
+  num_workers: 0
+  num_threads: 1
+  device: cpu
+  allow_reference_centers: false
+output_dir: ../runs/demo

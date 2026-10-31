@@ -1,0 +1,27 @@
+# Start here before preparing any center annotations.
+data:
+  samples: ../data/catapro/fold0/samples.csv
+  features: ../data/catapro/fold0/features.npz
+  centers: null
+model:
+  mode: baseline
+  hidden_dim: 128
+  num_layers: 3
+  local_dim: 64
+  dropout: 0.0
+  use_ec2: false
+  ec_dim: 16
+training:
+  seed: 17
+  batch_size: 64
+  epochs: 150
+  patience: 20
+  min_delta: 0.0001
+  lr: 0.0001
+  weight_decay: 0.00001
+  grad_clip: 5.0
+  num_workers: 0
+  num_threads: 4
+  device: cuda:0
+  allow_reference_centers: false
+output_dir: ../runs/catapro_fold0_baseline_seed17
