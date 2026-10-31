@@ -45,11 +45,18 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Destination reference-center JSONL file")
     centers.add_argument("--reaction-column", default="reaction_smiles")
     centers.add_argument("--overwrite", action="store_true")
+    from .sequence.cli import configure
+
+    configure(subparsers.add_parser("sequence", help="Replacement reaction-sequence experiments"))
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "sequence":
+        from .sequence.cli import dispatch
+
+        return dispatch(args)
     from dataclasses import replace
 
     from . import train

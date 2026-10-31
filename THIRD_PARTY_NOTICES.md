@@ -37,3 +37,16 @@ PyTorch, RDKit, NumPy, and the optional pandas dependency are installed separate
 and retain their respective licenses. This repository does not distribute their
 code, CataPro data, pretrained language-model weights, GNN-SOM weights, or a
 licensed reaction database. Users supply their own permitted data and weights.
+
+## Optional sr-SMILES converter
+
+The sequence preprocessing module calls the separately installed, MIT-licensed
+`sr-smiles==0.2.0` package: <https://github.com/heid-lab/sr-smiles>.
+No converter source or pretrained weights are vendored here. Cite the upstream
+representation work when using it: Sulpizio, Gerhaher, Heid and Jorner,
+*Bridging CGR representations and language models for reaction property prediction*,
+Digital Discovery (2026), <https://doi.org/10.1039/D6DD00120C>.
+
+The fixed character tokenizer, small Transformer, regression and MLM workflow in
+`src/newkcat/sequence/` are this repository's implementation. They are not the
+paper's pretrained BERT model or an exact reproduction of its experiments.
