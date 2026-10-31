@@ -1,0 +1,24 @@
+# B0: cached ProtT5 + MolT5 + MACCS, with the shared sequence experiment runner.
+# This is a controlled baseline, not a reproduction of the author's training protocol.
+data:
+  samples: ../data/sequence/samples.csv
+  features: ../data/sequence/features.npz
+  missing_reaction: error
+model:
+  chemical_encoder: catapro_features
+  dropout: 0.1
+training:
+  seed: 668
+  batch_size: 16
+  epochs: 150
+  patience: 20
+  lr: 0.0001
+  weight_decay: 0.0001
+  min_delta: 0.0
+  grad_clip: 5.0
+  num_workers: 0
+  num_threads: 1
+  device: cpu
+encoder_checkpoint: null
+freeze_encoder: false
+output_dir: ../runs/sequence_baseline

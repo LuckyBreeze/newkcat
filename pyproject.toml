@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "newkcat"
 version = "0.1.0"
-description = "Reaction-center-relative substrate encoding for controlled CataPro experiments"
+description = "Controlled substrate-graph and reaction-sequence replacements for CataPro"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8", "ruff>=0.9"]
 catapro = ["pandas>=2.0"]
+sequence = ["sr-smiles==0.2.0"]
 
 [project.scripts]
 newkcat = "newkcat.cli:main"

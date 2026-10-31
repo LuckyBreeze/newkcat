@@ -1,0 +1,31 @@
+# Validated sr-SMILES when available, full original reaction-SMILES otherwise.
+# This is a mixed-representation experiment, not pure sr-SMILES on every row.
+data:
+  samples: ../data/sequence_full/samples.csv
+  features: ../data/sequence/features.npz
+  missing_reaction: reaction
+model:
+  chemical_encoder: sr_smiles
+  pooling: mean
+  d_model: 128
+  nhead: 4
+  num_layers: 3
+  dim_feedforward: 512
+  head_dim: 256
+  max_length: 2048
+  dropout: 0.1
+training:
+  seed: 668
+  batch_size: 16
+  epochs: 150
+  patience: 20
+  lr: 0.0001
+  weight_decay: 0.0001
+  min_delta: 0.0
+  grad_clip: 5.0
+  num_workers: 0
+  num_threads: 1
+  device: cpu
+encoder_checkpoint: null
+freeze_encoder: false
+output_dir: ../runs/sequence_sr_hybrid

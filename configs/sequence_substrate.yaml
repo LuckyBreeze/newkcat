@@ -1,0 +1,30 @@
+# S: ProtT5 + a randomly initialized substrate character Transformer.
+data:
+  samples: ../data/sequence/samples.csv
+  features: ../data/sequence/features.npz
+  missing_reaction: error
+model:
+  chemical_encoder: substrate_smiles
+  pooling: mean
+  d_model: 128
+  nhead: 4
+  num_layers: 3
+  dim_feedforward: 512
+  head_dim: 256
+  max_length: 2048
+  dropout: 0.1
+training:
+  seed: 668
+  batch_size: 16
+  epochs: 150
+  patience: 20
+  lr: 0.0001
+  weight_decay: 0.0001
+  min_delta: 0.0
+  grad_clip: 5.0
+  num_workers: 0
+  num_threads: 1
+  device: cpu
+encoder_checkpoint: null
+freeze_encoder: false
+output_dir: ../runs/sequence_substrate

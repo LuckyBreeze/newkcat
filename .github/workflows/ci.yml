@@ -23,7 +23,7 @@ jobs:
       - name: Install CPU dependencies
         run: |
           python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install -e '.[test,catapro]'
+          python -m pip install -e '.[test,catapro,sequence]'
       - name: Lint and tests
         run: |
           ruff check .
@@ -36,3 +36,21 @@ jobs:
           newkcat evaluate --checkpoint runs/demo/best.pt --config examples/demo.yaml --split test --output runs/demo_test
           newkcat predict --checkpoint runs/demo/best.pt --config examples/demo.yaml --split test --output runs/demo_predict
           newkcat audit-centers --checkpoint runs/demo/best.pt --config examples/demo.yaml --split val --output runs/demo_audit
+      - name: Reaction-sequence replacement and MLM smoke with synthetic data
+        run: |
+          python examples/make_sequence_demo.py
+          newkcat sequence validate --config runs/sequence_demo/sr.yaml
+          for mode in baseline reaction sr sr_local; do
+            newkcat sequence train --config runs/sequence_demo/$mode.yaml
+            newkcat sequence evaluate --config runs/sequence_demo/$mode.yaml --checkpoint runs/sequence_demo/models/$mode/best.pt --split test --output runs/sequence_demo/evaluate_$mode
+          done
+          newkcat sequence predict --config runs/sequence_demo/sr.yaml --checkpoint runs/sequence_demo/models/sr/best.pt --split test --output runs/sequence_demo/predict_sr
+          newkcat sequence pretrain --config runs/sequence_demo/sr.yaml --train-corpus runs/sequence_demo/mlm/train_sr.txt --val-corpus runs/sequence_demo/mlm/val_sr.txt --output runs/sequence_demo/mlm_output
+          newkcat sequence train --config runs/sequence_demo/sr_pretrained.yaml
+      - name: Full-row input preservation smoke with synthetic data
+        run: |
+          python examples/make_full_row_demo.py
+          for mode in full_reaction full_sr full_sr_local reaction_only; do
+            newkcat sequence train --config runs/sequence_full_demo/$mode.yaml
+            newkcat sequence evaluate --config runs/sequence_full_demo/$mode.yaml --checkpoint runs/sequence_full_demo/models/$mode/best.pt --split test --output runs/sequence_full_demo/evaluate_$mode
+          done
