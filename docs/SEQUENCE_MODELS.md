@@ -8,6 +8,11 @@ MolT5、MACCS 和底物图分支。原有图分支命令仍然保留，便于对
 新的字符 Transformer 默认从随机参数开始训练；它不是 sr-SMILES 论文中大规模
 预训练 BERT 的复现，也没有附带或自动下载该论文的预训练权重。
 
+**全量数据入口更新：** 普通 R 输入不需要 sr 转换成功；新增 `prepare --reaction-only`。
+需要保持全部记录的 C 实验，可显式选择 `--on-error reaction` 与 `missing_reaction: reaction`，
+sr 失败时仍读取完整原反应。详见 [全量反应输入说明](FULL_ROW_REACTION_INPUTS.md)。
+下文原有严格／共同底物回退选项继续保留，均不自动删除记录。
+
 ## 1. 五个比较版本分别回答什么
 
 | 版本 | 配置文件 | 化学输入 | 要回答的问题 |
@@ -395,6 +400,7 @@ newkcat sequence evaluate \
 ```
 
 输出 `predictions.csv` 和 `metrics.json`。预测文件包含 `sample_id`、预测、输入状态以及评估目标。
+评估还输出按输入状态分层的 `metrics_by_input_status`；全量指标仍为主指标。
 指标在 `log10(kcat / s^-1)` 空间计算；测试集还会与 checkpoint 中的 train/val 样本 ID、
 精确序列 hash 和 group ID 检查交集。精确身份检查不等于重新验证 40% 序列相似性聚类，
 原 cluster40 划分仍需在上游确认。

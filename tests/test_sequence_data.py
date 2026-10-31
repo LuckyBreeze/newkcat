@@ -162,6 +162,62 @@ def test_reaction_and_sr_share_explicit_substrate_fallback(tmp_path):
         assert dataset.coverage == {"fallback_substrate": 1}
 
 
+def test_native_reaction_is_available_when_sr_conversion_failed(tmp_path):
+    rows = sample_rows()
+    rows[0].update(reaction_status="fallback_reaction", sr_smiles="", edit_spans="[]")
+    samples, features = manifest(tmp_path, rows), cache(tmp_path)
+    native = SequenceDataset(samples, features, chemical_encoder="reaction_smiles", splits=["train"])
+    assert native[0]["text"] == rows[0]["reaction_smiles"]
+    assert native.coverage == {"fallback_reaction": 1}
+    assert not any(native[0]["edit_mask"])
+    for policy in ("error", "substrate"):
+        with pytest.raises(ValueError, match="missing_reaction='reaction'"):
+            SequenceDataset(samples, features, splits=["train"], missing_reaction=policy)
+    hybrid = SequenceDataset(samples, features, splits=["train"], missing_reaction="reaction")
+    assert hybrid[0]["input_ids"] == native[0]["input_ids"]
+    assert hybrid[0]["target"] == native[0]["target"] == -1.25
+    assert not any(hybrid[0]["edit_mask"])
+
+
+def test_reaction_only_artifacts_cannot_masquerade_as_sr_preparation(tmp_path):
+    rows = sample_rows()
+    rows[0].update(reaction_status="reaction_only", sr_smiles="", edit_spans="[]")
+    samples, features = manifest(tmp_path, rows), cache(tmp_path)
+    native = SequenceDataset(samples, features, chemical_encoder="reaction_smiles", splits=["train"])
+    assert native[0]["text"] == "CCO>>CC=O" and native[0]["status"] == "reaction_only"
+    for policy in ("error", "substrate", "reaction"):
+        with pytest.raises(ValueError, match="reaction_only"):
+            SequenceDataset(samples, features, splits=["train"], missing_reaction=policy)
+
+
+@pytest.mark.parametrize("reaction", ["", "CCO>>", "[CH3:1][OH:2]>>[CH2:1]=[O:2]"])
+def test_full_reaction_fallback_requires_valid_map_free_text(tmp_path, reaction):
+    rows = sample_rows()
+    rows[0].update(reaction_status="fallback_reaction", reaction_smiles=reaction,
+                   sr_smiles="", edit_spans="[]")
+    with pytest.raises(ValueError):
+        SequenceDataset(manifest(tmp_path, rows), cache(tmp_path), splits=["train"],
+                        missing_reaction="reaction")
+
+
+def test_native_r_does_not_depend_on_failed_sr_annotation_but_hybrid_rejects_conflict(tmp_path):
+    rows = sample_rows()
+    rows[0].update(reaction_status="fallback_reaction", edit_spans="not_json")
+    samples, features = manifest(tmp_path, rows), cache(tmp_path)
+    native = SequenceDataset(samples, features, chemical_encoder="reaction_smiles", splits=["train"])
+    assert native[0]["text"] == "CCO>>CC=O"
+    with pytest.raises(ValueError, match="no sr text|edit annotations|span"):
+        SequenceDataset(samples, features, splits=["train"], missing_reaction="reaction")
+
+
+def test_reaction_policy_does_not_silently_switch_to_substrate(tmp_path):
+    rows = sample_rows()
+    rows[0].update(reaction_status="fallback_substrate", reaction_smiles="", sr_smiles="")
+    with pytest.raises(ValueError, match="Reaction unavailable"):
+        SequenceDataset(manifest(tmp_path, rows), cache(tmp_path), splits=["train"],
+                        missing_reaction="reaction")
+
+
 def test_declared_ok_but_empty_text_is_not_fallback(tmp_path):
     rows = sample_rows()
     rows[0]["sr_smiles"] = ""

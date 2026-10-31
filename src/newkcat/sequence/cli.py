@@ -23,13 +23,15 @@ def configure(parser):
     importer.add_argument("--reaction-column", default="reaction_smiles")
     importer.add_argument("--group-column", default="cluster_id")
     importer.add_argument("--overwrite", action="store_true")
-    prepare = commands.add_parser("prepare", help="Paired R/C conversion, roundtrip and coverage audit")
+    prepare = commands.add_parser("prepare", help="Native R or audited sr conversion without dropping rows")
     prepare.add_argument("--samples", type=Path, required=True)
     prepare.add_argument("--output", type=Path, required=True)
     prepare.add_argument("--mapping-jsonl", type=Path)
     prepare.add_argument("--mapped-column", default="mapped_rxn")
     prepare.add_argument("--max-length", type=int, default=2048)
-    prepare.add_argument("--on-error", choices=("error", "substrate"), default="error")
+    prepare.add_argument("--on-error", choices=("error", "substrate", "reaction"), default="error")
+    prepare.add_argument("--reaction-only", action="store_true",
+                         help="Prepare original reaction text without mapping or sr conversion")
     prepare.add_argument("--overwrite", action="store_true")
     for name in ("validate", "train", "evaluate", "predict"):
         sub = commands.add_parser(name)
@@ -76,6 +78,7 @@ def dispatch(args) -> int:
                 args.samples, output_dir=args.output, mapping_jsonl=args.mapping_jsonl,
                 mapped_column=args.mapped_column, max_length=args.max_length,
                 on_error=args.on_error, overwrite=args.overwrite,
+                reaction_only=args.reaction_only,
             )
         else:
             config = runner.load_config(args.config, encoder=getattr(args, "encoder", None),

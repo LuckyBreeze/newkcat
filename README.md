@@ -5,6 +5,8 @@ CataPro 缓存基线、底物 SMILES、完整 reaction-SMILES、sr-SMILES 及动
 支持成对转换审计、独立训练/评估和可选 MLM 预训练。序列版本只需 ProtT5 缓存，
 不要求 MolT5、MACCS 或底物图。详见 **[反应序列模型使用说明](docs/SEQUENCE_MODELS.md)**。
 当前小型字符 Transformer 默认随机初始化，没有附带论文预训练权重，也不承诺性能提升。
+新增 **[全量样本的反应输入与转换修复](docs/FULL_ROW_REACTION_INPUTS.md)**：普通反应序列可独立准备，
+sr 转换失败可显式保留完整原反应，不要求删掉动力学记录。
 序列路线的配置位于 `configs/sequence_*.yaml`；以下第 1–6 节保留原有图分支路线的说明。
 
 **在 CataPro 上检验“相对于反应中心的化学环境是否有用”。**

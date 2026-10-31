@@ -2,8 +2,8 @@
 
 Only selected splits have targets, features, and chemical strings materialized.
 The entire manifest still undergoes the existing ID/sequence/group leakage checks.
-Reaction availability is shared by the reaction-SMILES and sr-SMILES arms; the
-explicit substrate fallback never drops a row or invents a reaction.
+Native reaction text and sr conversion have separate availability. Explicit
+fallback policies never drop a row or invent a reaction.
 """
 
 from __future__ import annotations
@@ -115,13 +115,26 @@ def _substrate_text(row: dict[str, Any]) -> str:
     return text
 
 
+def _reaction_text(row: dict[str, Any]) -> str:
+    """Validate prepared full reaction text without requiring atom mapping."""
+    from .chemistry import assert_map_free, normalize_reaction
+
+    text = row.get("reaction_smiles", "")
+    if not text:
+        raise ValueError("Declared reaction text is empty")
+    assert_map_free(text)
+    normalize_reaction(text)
+    return text
+
+
 class SequenceDataset(Dataset):
     """Use one manifest and protein cache across replacement/baseline arms.
 
     ``catapro_features`` reads the existing three cached feature arrays without
     parsing chemical graphs or requiring reaction annotations. Other encoders
     read only ``protein``. ``missing_reaction='substrate'`` is an explicit
-    experiment setting shared by R/C; it is never an automatic exception handler.
+    experiment setting shared by R/C. ``missing_reaction='reaction'`` lets C
+    read explicitly prepared full R text if only its sr conversion failed.
     """
 
     def __init__(
@@ -137,8 +150,8 @@ class SequenceDataset(Dataset):
     ):
         if chemical_encoder not in CHEMICAL_ENCODERS:
             raise ValueError(f"Unknown chemical_encoder: {chemical_encoder!r}")
-        if missing_reaction not in {"error", "substrate"}:
-            raise ValueError("missing_reaction must be 'error' or 'substrate'")
+        if missing_reaction not in {"error", "substrate", "reaction"}:
+            raise ValueError("missing_reaction must be 'error', 'substrate' or 'reaction'")
         if type(require_targets) is not bool:
             raise ValueError("require_targets must be a boolean")
         if type(max_length) is not int or max_length < 3:
@@ -192,10 +205,25 @@ class SequenceDataset(Dataset):
         if self.chemical_encoder == "substrate_smiles":
             return _substrate_text(row), [], "substrate_smiles"
         status = row.get("reaction_status", "")
-        if status not in {"ok", "", "missing", "unavailable", "fallback_substrate"}:
+        if status not in {"ok", "", "missing", "unavailable", "fallback_substrate",
+                          "fallback_reaction", "reaction_only"}:
             raise ValueError(f"Unknown reaction_status: {status!r}")
+        if status == "reaction_only":
+            if self.chemical_encoder != "reaction_smiles":
+                raise ValueError("reaction_only inputs have not undergone sr preparation; "
+                                 "use reaction_smiles or prepare the sr representation")
+            return _reaction_text(row), [], "reaction_only"
+        if status == "fallback_reaction":
+            if self.chemical_encoder == "reaction_smiles":
+                return _reaction_text(row), [], "fallback_reaction"
+            if self.missing_reaction != "reaction":
+                raise ValueError("sr conversion failed but full reaction text is available; "
+                                 "select missing_reaction='reaction' explicitly for hybrid input")
+            if row.get("sr_smiles", "") or _parse_spans(row.get("edit_spans", ""), ""):
+                raise ValueError("fallback_reaction must have no sr text or edit annotations")
+            return _reaction_text(row), [], "fallback_reaction"
         if status != "ok":
-            if self.missing_reaction == "error":
+            if self.missing_reaction != "substrate":
                 raise ValueError(
                     f"Reaction unavailable (reaction_status={status!r}); prepare the manifest "
                     "or explicitly select missing_reaction='substrate'"
@@ -212,15 +240,7 @@ class SequenceDataset(Dataset):
                 raise ValueError("Stored edit_spans do not match the sr-SMILES dynamic fields")
         else:
             # The reaction-SMILES control has no supplied center/edit labels.
-            from .chemistry import normalize_reaction
-
-            # Reject unprepared/mapped inputs rather than silently allowing IDs
-            # to become chemical features. Normalize traversal only in prepare.
-            import re
-
-            if re.search(r"\[[^\]]*:[0-9]+[^\]]*\]", text):
-                raise ValueError("Atom-map identifiers must not enter training text")
-            normalize_reaction(text)
+            text = _reaction_text(row)
             spans = []
         return text, spans, "ok"
 

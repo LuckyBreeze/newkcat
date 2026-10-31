@@ -248,3 +248,42 @@ def test_reaction_models_require_preparation_but_baseline_does_not(tmp_path):
     runner.validate(config, split="train")
     with pytest.raises(ValueError, match="require sequence prepare artifacts"):
         runner.validate(replace(config, chemical_encoder="sr_smiles"), split="train")
+
+
+@pytest.mark.parametrize("encoder,pooling", [
+    ("reaction_smiles", "mean"), ("sr_smiles", "mean"),
+    ("sr_smiles", "edit_conditioned"),
+])
+def test_full_reaction_fallback_trains_without_losing_samples(tmp_path, encoder, pooling):
+    policy = "reaction" if encoder == "sr_smiles" else "error"
+    config, rows = experiment(tmp_path, encoder=encoder, pooling=pooling,
+                              missing_reaction=policy)
+    for index in (0, 4, 5):
+        rows[index].update(reaction_status="fallback_reaction", sr_smiles="", edit_spans="[]")
+    _write_prepared_fixture(config.samples, rows)
+    result = runner.fit(config)
+    assert result["train_count"] == 3 and result["val_count"] == 2
+    expected = ("sr_smiles_with_full_reaction_fallback"
+                if encoder == "sr_smiles" else "reaction_smiles")
+    assert result["representation_policy"] == expected
+    # Checkpoint policy wins over contradictory caller configuration.
+    evaluation = runner.infer(replace(config, missing_reaction="error"), result["checkpoint"],
+                              output_dir=tmp_path / "evaluate_full", split="test")
+    assert evaluation["n"] == 1
+    assert evaluation["representation_policy"] == expected
+    assert sum(value["n"] for value in evaluation["metrics_by_input_status"].values()) == 1
+    with (tmp_path / "evaluate_full" / "predictions.csv").open() as handle:
+        predictions = list(csv.DictReader(handle))
+    assert [row["sample_id"] for row in predictions] == ["sample5"]
+    assert float(predictions[0]["target"]) == float(rows[5]["log10_kcat"])
+
+
+def test_reaction_only_manifest_can_train_without_sr_annotations(tmp_path):
+    config, rows = experiment(tmp_path, encoder="reaction_smiles")
+    for row in rows:
+        row.update(reaction_status="reaction_only", sr_smiles="", edit_spans="[]")
+    _write_prepared_fixture(config.samples, rows)
+    result = runner.fit(config)
+    assert result["train_count"] == 3 and result["val_count"] == 2
+    with pytest.raises(ValueError, match="reaction_only|sr-SMILES|sr_smiles"):
+        runner.validate(replace(config, chemical_encoder="sr_smiles", missing_reaction="reaction"))

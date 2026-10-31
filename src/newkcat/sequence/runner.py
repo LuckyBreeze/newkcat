@@ -78,8 +78,8 @@ def load_config(path: str | Path, *, encoder: str | None = None,
     if set(data)-{"samples", "features", "missing_reaction"}:
         raise ValueError("Sequence data supports samples, features and missing_reaction")
     missing = data.get("missing_reaction", "error")
-    if missing not in {"error", "substrate"}:
-        raise ValueError("missing_reaction must be error or substrate")
+    if missing not in {"error", "substrate", "reaction"}:
+        raise ValueError("missing_reaction must be error, substrate or reaction")
     model_raw = dict(_mapping(raw.get("model", {}), "model"))
     representation = encoder or model_raw.pop("chemical_encoder", "sr_smiles")
     model_raw.pop("chemical_encoder", None)
@@ -155,6 +155,8 @@ def _verify_preparation(config) -> dict | None:
     return {"coverage_sha256": sha256_file(report_path),
             "provenance_sha256": report["provenance_sha256"],
             "converter_versions": report.get("converter_versions", []),
+            "decoder_compat": report.get("decoder_compat", []),
+            "preparation_mode": report.get("mode", "paired"),
             "policy": report.get("policy"), "verification": "prepared_artifact_hashes_match"}
 
 
@@ -218,6 +220,12 @@ def collect_predictions(model, loader, device, *, need_targets=True):
     result = {"sample_ids": ids, "prediction": predictions, "statuses": statuses}
     if need_targets:
         result.update(target=targets, metrics=regression_metrics(targets, predictions))
+        result["metrics_by_input_status"] = {
+            status: regression_metrics(
+                [value for value, observed in zip(targets, statuses) if observed == status],
+                [value for value, observed in zip(predictions, statuses) if observed == status],
+            ) for status in sorted(set(statuses))
+        }
     return result
 
 
@@ -249,11 +257,20 @@ def validate(config: SequenceRunConfig, *, split: str | None = None) -> dict:
         "source_hashes": _hashes(config), "missing_reaction": config.missing_reaction,
         "preparation": _verify_preparation(config),
         "information_regime": _regime(config.chemical_encoder),
+        "representation_policy": _representation_policy(config),
     }
 
 
 def _regime(encoder):
     return "enzyme_substrate" if encoder in {"catapro_features", "substrate_smiles"} else "enzyme_known_reaction"
+
+
+def _representation_policy(config) -> str:
+    if config.chemical_encoder == "sr_smiles" and config.missing_reaction == "reaction":
+        return "sr_smiles_with_full_reaction_fallback"
+    if config.chemical_encoder in {"reaction_smiles", "sr_smiles"} and config.missing_reaction == "substrate":
+        return f"{config.chemical_encoder}_with_substrate_fallback"
+    return config.chemical_encoder
 
 
 def fit(config: SequenceRunConfig, *, overwrite: bool = False) -> dict:
@@ -286,6 +303,7 @@ def fit(config: SequenceRunConfig, *, overwrite: bool = False) -> dict:
         "split_ids": splits, "run_id": uuid.uuid4().hex, "git": _git_provenance(),
         "resolved_config": config.snapshot(), "target_definition": "log10(kcat / s^-1)",
         "information_regime": _regime(config.chemical_encoder),
+        "representation_policy": _representation_policy(config),
         "coverage": {"train": train.coverage, "val": val.coverage},
         "preparation": _verify_preparation(config),
     }
@@ -346,7 +364,9 @@ def fit(config: SequenceRunConfig, *, overwrite: bool = False) -> dict:
                   "checkpoint": str(destination), "checkpoint_sha256": sha256_file(destination),
                   "parameter_count": sum(p.numel() for p in model.parameters()),
                   "trainable_parameter_count": sum(p.numel() for p in model.parameters() if p.requires_grad),
-                  "initialization": initialization, "coverage": metadata["coverage"]}
+                  "initialization": initialization, "coverage": metadata["coverage"],
+                  "representation_policy": _representation_policy(config),
+                  "validation_by_input_status": locked["metrics_by_input_status"]}
         _json_write(config.output_dir / "summary.json", result)
         _json_write(config.output_dir / "run.json", {**metadata, "status": "completed"})
         return result
@@ -366,7 +386,7 @@ def load_checkpoint(path) -> dict:
     if required-checkpoint.keys():
         raise ValueError(f"Checkpoint lacks provenance: {sorted(required-checkpoint.keys())}")
     encoder = checkpoint["chemical_encoder"]
-    if encoder not in ENCODERS or checkpoint["missing_reaction"] not in {"error", "substrate"}:
+    if encoder not in ENCODERS or checkpoint["missing_reaction"] not in {"error", "substrate", "reaction"}:
         raise ValueError("Invalid checkpoint representation or missing-reaction policy")
     try:
         model = SequenceModelConfig(**_mapping(checkpoint["model_config"], "model_config"))
@@ -448,9 +468,11 @@ def infer(config: SequenceRunConfig, checkpoint_path: str | Path, *, output_dir:
               "training_source_hashes": checkpoint["source_hashes"], "weights_changed": False,
               "preparation": _verify_preparation(effective),
               "information_regime": _regime(effective.chemical_encoder),
+              "representation_policy": _representation_policy(effective),
               "metrics_computed": evaluate,
               "note": "Architecture, tokenizer and fallback policy are locked by the checkpoint."}
     if evaluate:
         result["metrics"] = collected["metrics"]
+        result["metrics_by_input_status"] = collected["metrics_by_input_status"]
     _json_write(output / ("metrics.json" if evaluate else "prediction_metadata.json"), result)
     return result

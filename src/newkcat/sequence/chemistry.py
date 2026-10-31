@@ -14,6 +14,8 @@ import re
 
 from rdkit import Chem, rdBase
 
+from .sr_compat import SR_DECODER_COMPAT
+
 
 SR_SMILES_VERSION = "0.2.0"
 _MAP = re.compile(r":([0-9]+)")
@@ -132,9 +134,10 @@ def _load_converter():
         raise RuntimeError(
             f"Audited conversion requires sr-smiles=={SR_SMILES_VERSION}, found {version}"
         )
-    from sr_smiles import rxn_to_sr, sr_to_rxn
+    from sr_smiles import rxn_to_sr
+    from .sr_compat import load_sr_decoder
 
-    return rxn_to_sr, sr_to_rxn, version
+    return rxn_to_sr, load_sr_decoder(), version
 
 
 def _strip_maps_with_provenance(mapped_text: str) -> tuple[str, list[dict]]:
@@ -282,6 +285,7 @@ def prepare_reaction(mapped_rxn: str) -> dict:
         "sr_smiles": sr_smiles,
         "edit_spans": edit_spans,
         "converter_version": version,
+        "sr_decoder_compat": SR_DECODER_COMPAT,
         "rdkit_version": rdBase.rdkitVersion,
         "mapping_provenance": {
             "input_sha256": hashlib.sha256(mapped_rxn.encode("utf-8")).hexdigest(),

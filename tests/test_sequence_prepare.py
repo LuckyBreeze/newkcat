@@ -98,6 +98,90 @@ def test_explicit_fallback_is_shared_by_both_representations_and_retains_rows(tm
     assert prepared[1]["log10_kcat"] == rows[1]["log10_kcat"]
 
 
+def test_full_reaction_policy_retains_every_row_and_source_information(tmp_path, monkeypatch):
+    _mock_conversion(monkeypatch)
+    rows = _rows()
+    rows[1]["mapped_rxn"] = "BAD"
+    source = _write(tmp_path / "source.csv", rows)
+    report = prepare.prepare_sequences(source, output_dir=tmp_path / "prepared", on_error="reaction")
+    assert report["n"] == 3 and report["rows_dropped"] == 0
+    assert report["reaction_available"] == 3 and report["sr_available"] == 2
+    assert report["fallback_reaction_rows"] == 1 and report["fallback_substrate_rows"] == 0
+    assert report["samples_written"] is True
+    with (tmp_path / "prepared" / "samples.csv").open() as handle:
+        prepared = list(csv.DictReader(handle))
+    for actual, original in zip(prepared, rows, strict=True):
+        for field in ("sample_id", "sequence", "smiles", "log10_kcat", "split", "group_id"):
+            assert actual[field] == original[field]
+        assert actual["reaction_smiles"] == "CCO>>CC=O"
+    assert prepared[1]["reaction_status"] == "fallback_reaction"
+    assert prepared[1]["sr_smiles"] == "" and prepared[1]["edit_spans"] == "[]"
+    assert prepared[1]["sr_input_format"] == "reaction_smiles"
+    assert prepared[1]["reaction_error"]
+
+
+@pytest.mark.parametrize("reaction", ["", "not_a_reaction", "C>>"])
+def test_full_reaction_policy_does_not_hide_invalid_source_text(tmp_path, monkeypatch, reaction):
+    _mock_conversion(monkeypatch)
+    rows = _rows()
+    rows[0]["reaction_smiles"] = reaction
+    source = _write(tmp_path / "source.csv", rows)
+    with pytest.raises(ValueError, match="full reaction text unavailable"):
+        prepare.prepare_sequences(source, output_dir=tmp_path / "prepared", on_error="reaction")
+    assert not (tmp_path / "prepared" / "samples.csv").exists()
+
+
+def test_reaction_only_needs_neither_mapping_file_nor_converter(tmp_path, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Native reaction preparation must not load mappings or sr converter")
+
+    monkeypatch.setattr(prepare, "prepare_reaction", forbidden)
+    monkeypatch.setattr(prepare, "_mapping_records", forbidden)
+    rows = _rows()
+    for row in rows:
+        row["mapped_rxn"] = "bad_uninspected_mapping"
+    source = _write(tmp_path / "source.csv", rows)
+    report = prepare.prepare_sequences(source, output_dir=tmp_path / "prepared", reaction_only=True,
+                                       mapping_jsonl=tmp_path / "missing_mapping.jsonl")
+    assert report["mode"] == "reaction_only" and report["samples_written"] is True
+    assert report["n"] == report["reaction_available"] == 3
+    assert report["sr_available"] == report["failed"] == 0
+    assert report["converter_versions"] == report["decoder_compat"] == []
+    assert report["mapping_sha256"] is None
+    with (tmp_path / "prepared" / "samples.csv").open() as handle:
+        prepared = list(csv.DictReader(handle))
+    assert all(row["reaction_status"] == "reaction_only" for row in prepared)
+    assert all(row["reaction_smiles"] == "CCO>>CC=O" for row in prepared)
+    assert all(row["sr_smiles"] == "" and row["edit_spans"] == "[]" for row in prepared)
+    assert [row["log10_kcat"] for row in prepared] == [row["log10_kcat"] for row in rows]
+
+
+@pytest.mark.parametrize("reaction_only", [False, True])
+def test_full_reaction_entries_flag_substrate_disagreement_without_substitution(
+        tmp_path, monkeypatch, reaction_only):
+    _mock_conversion(monkeypatch)
+    rows = _rows()
+    rows[0]["smiles"] = "CC"
+    source = _write(tmp_path / "source.csv", rows)
+    report = prepare.prepare_sequences(source, output_dir=tmp_path / "prepared",
+                                       on_error="reaction", reaction_only=reaction_only)
+    assert report["annotation_issue_rows"] == 1 and report["reaction_available"] == 3
+    with (tmp_path / "prepared" / "samples.csv").open() as handle:
+        prepared = list(csv.DictReader(handle))
+    assert prepared[0]["smiles"] == "CC"
+    assert prepared[0]["reaction_smiles"] == rows[0]["reaction_smiles"]
+    assert prepared[0]["annotation_issue"] and prepared[0]["substrate_match"] == "false"
+    assert prepared[0]["reaction_status"] == ("reaction_only" if reaction_only else "fallback_reaction")
+
+
+def test_decoder_compatibility_is_persisted_in_preparation_report(tmp_path, monkeypatch):
+    value = {**_converted(), "sr_decoder_compat": "example_verified_adapter_v1"}
+    monkeypatch.setattr(prepare, "prepare_reaction", lambda _: value)
+    report = prepare.prepare_sequences(_write(tmp_path / "source.csv", _rows()),
+                                       output_dir=tmp_path / "prepared")
+    assert report["decoder_compat"] == ["example_verified_adapter_v1"]
+
+
 def test_failed_strict_run_reports_coverage_and_leaves_no_runnable_manifest(tmp_path, monkeypatch):
     _mock_conversion(monkeypatch)
     rows = _rows()
