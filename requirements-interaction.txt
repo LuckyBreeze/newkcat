@@ -1,0 +1,5 @@
+# The trainable model/cache reader only needs the original project dependencies.
+# Install these extras for frozen RXNFP + ProtT5 extraction.
+transformers>=4.45,<5
+sentencepiece>=0.2,<0.3
+safetensors>=0.4,<1

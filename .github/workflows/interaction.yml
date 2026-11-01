@@ -1,0 +1,44 @@
+name: Pretrained interaction model
+
+on:
+  push:
+    branches: [feat/pretrained-reaction-interaction]
+  pull_request:
+    paths:
+      - src/newkcat/interaction/**
+      - tests/test_interaction*.py
+      - examples/make_interaction_demo.py
+      - requirements-interaction.txt
+      - .github/workflows/interaction.yml
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install CPU model and feature-extraction APIs
+        run: |
+          python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e '.[test]' -r requirements-interaction.txt
+      - name: Lint and interaction behavior tests
+        run: |
+          ruff check src/newkcat/interaction tests/test_interaction*.py examples/make_interaction_demo.py
+          pytest -q tests/test_interaction*.py
+      - name: Synthetic train and independent prediction
+        run: |
+          python examples/make_interaction_demo.py --output /tmp/interaction-demo
+          python -m newkcat.interaction describe --config configs/interaction/pretrained_interaction.yaml
+          python -m newkcat.interaction train --config /tmp/interaction-demo/config.yaml
+          python -m newkcat.interaction evaluate --config /tmp/interaction-demo/config.yaml --checkpoint /tmp/interaction-demo/train_run/best.pt --output /tmp/interaction-demo/test_result
+          python -m newkcat.interaction predict --config /tmp/interaction-demo/config.yaml --checkpoint /tmp/interaction-demo/train_run/best.pt --split all --output /tmp/interaction-demo/all_predictions

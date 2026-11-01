@@ -1,0 +1,37 @@
+# Paths are relative to this configuration. CLI overrides are resolved from cwd.
+# Reuse the prepared reaction_smiles column; no CGR/sr-SMILES conversion is needed.
+data:
+  samples: ../../data/sequence/samples.csv
+  cache: ../../data/interaction_cache
+  # Set to the existing NPZ with sample_ids + protein to preserve those values.
+  # Null uses the mean of all cached residue states, never a random replacement.
+  global_features: null
+model:
+  protein_dim: 1024
+  reaction_dim: 256
+  d_model: 256
+  nhead: 4
+  num_layers: 2
+  dim_feedforward: 512
+  dropout: 0.1
+  use_topology: true
+  use_cross_attention: true
+  head_hidden_dim: 512
+  head_bottleneck_dim: 128
+  residual_scale_init: 0.1
+training:
+  seed: 668
+  batch_size: 1
+  grad_accum_steps: 8
+  epochs: 100
+  patience: 15
+  lr: 0.0003
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  min_delta: 0.0
+  standardize_target: true
+  num_workers: 0
+  num_threads: 1
+  device: cpu
+  deterministic: false
+output_dir: ../../runs/pretrained_interaction_seed668
