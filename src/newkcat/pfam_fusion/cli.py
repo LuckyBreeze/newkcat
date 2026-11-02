@@ -64,9 +64,14 @@ def pretrained_vectors(cfg, vocab):
 
 
 def create_model(cfg, vocab, nmax, table=None):
-    return PfamCataPro(len(vocab),nmax,cfg["model"]["variant"]=="ordered",
-                        pretrained=table,dropout=float(cfg["model"].get("dropout",.1)),
-                        layers=int(cfg["model"].get("transformer_layers",1)))
+    return PfamCataPro(
+        len(vocab), nmax, cfg["model"]["variant"] == "ordered",
+        pretrained=table,
+        dropout=float(cfg["model"].get("dropout", 0.1)),
+        fc_dropout=float(cfg["model"].get("fc_dropout", 0.0)),
+        init_scheme=cfg["model"].get("init_scheme", "legacy"),
+        layers=int(cfg["model"].get("transformer_layers", 1)),
+    )
 
 
 def dataset(cfg, rows, hits, vocab, nmax):
@@ -107,79 +112,243 @@ def inference(model,ds,device,batch_size):
     return np.concatenate(result)
 
 
-def metrics(y,p):
-    return {"n":len(y),"rmse":float(np.sqrt(np.mean((p-y)**2))),
-            "mae":float(np.mean(np.abs(p-y)))}
+def metrics(y, p):
+    """Full-dataset metrics in log10(kcat) space, never averaged across batches."""
+    y = np.asarray(y, dtype=np.float64)
+    p = np.asarray(p, dtype=np.float64)
+    if y.ndim != 1 or y.shape != p.shape or len(y) < 1:
+        raise ValueError("Expected matching 1-D nonempty target/prediction arrays")
+    if not (np.isfinite(y).all() and np.isfinite(p).all()):
+        raise ValueError("Predictions and targets must be finite")
+    mse = float(np.mean(np.square(p - y)))
+    total = float(np.square(y - y.mean()).sum())
+    r2 = 1 - float(np.square(p - y).sum()) / total if total > 0 else None
+    pcc = None
+    if len(y) > 1 and float(np.std(y)) > 0 and float(np.std(p)) > 0:
+        pcc = float(np.corrcoef(y, p)[0, 1])
+    return {
+        "n": len(y),
+        "loss": mse, "rmse": math.sqrt(mse),
+        "mae": float(np.mean(np.abs(p - y))),
+        "r2": r2, "pcc": pcc,
+    }
 
 
-def train(cfg,output,init_catapro=None):
+def build_optimizer(model, lr, weight_decay):
+    """AdamW decays matrices, but not scalar/bias/norm parameters."""
+    if not lr > 0 or not weight_decay >= 0:
+        raise ValueError("lr must be positive and weight_decay nonnegative")
+    decay, no_decay = [], []
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        if parameter.ndim < 2 or name.endswith(".bias"):
+            no_decay.append(parameter)
+        else:
+            decay.append(parameter)
+    return torch.optim.AdamW(
+        [{"params": decay, "weight_decay": weight_decay},
+         {"params": no_decay, "weight_decay": 0.0}],
+        lr=lr,
+    )
+
+
+def scheduled_lr(step, total_steps, warmup_steps, base_lr, min_lr_ratio):
+    """Step-wise linear warmup followed by a smooth cosine ending at a fixed floor."""
+    if not 1 <= step <= total_steps:
+        raise ValueError("step must be in [1, total_steps]")
+    if not 0 <= warmup_steps < total_steps:
+        raise ValueError("warmup_steps must be in [0, total_steps)")
+    if not 0 <= min_lr_ratio <= 1 or base_lr <= 0:
+        raise ValueError("Invalid base_lr or min_lr_ratio")
+    if warmup_steps and step <= warmup_steps:
+        return base_lr * step / warmup_steps
+    progress = (step - warmup_steps) / (total_steps - warmup_steps)
+    cosine = 0.5 * (1 + math.cos(math.pi * progress))
+    return base_lr * (min_lr_ratio + (1 - min_lr_ratio) * cosine)
+
+
+def train(cfg, output, init_catapro=None):
+    """Train with epoch-level train/validation eval metrics and durable CSV history."""
     if output.exists():
         raise FileExistsError(f"Will not overwrite {output}")
-    tr,va,_,hits,vocab,nmax=prepare(cfg)
-    minimum=float(cfg["model"].get("min_train_pfam_fraction",.9))
-    if audit(tr,hits,vocab,nmax,cfg["model"]["variant"]=="ordered")["annotation_hit_fraction"]<minimum:
-        raise ValueError("Pfam hit row_uid coverage insufficient; supply real Pfam annotations")
-    features=resource(cfg,"features_npz")
-    ds_tr,ds_va=(dataset(cfg,rows,hits,vocab,nmax) for rows in (tr,va))
-    pars=cfg.get("training",{})
-    seed=int(pars.get("seed",17))
-    random.seed(seed);np.random.seed(seed);torch.manual_seed(seed)
-    table, vec=pretrained_vectors(cfg,vocab)
-    model=create_model(cfg,vocab,nmax,table)
+    tr, va, _, hits, vocab, nmax = prepare(cfg)
+    ordered = cfg["model"]["variant"] == "ordered"
+    minimum = float(cfg["model"].get("min_train_pfam_fraction", 0.9))
+    train_audit = audit(tr, hits, vocab, nmax, ordered)
+    if train_audit["annotation_hit_fraction"] < minimum:
+        raise ValueError("Pfam hit row_uid coverage insufficient; supply real annotations")
+    ds_tr, ds_va = (dataset(cfg, rows, hits, vocab, nmax) for rows in (tr, va))
+
+    pars = cfg.get("training", {})
+    seed = int(pars.get("seed", 668))
+    batch_size = int(pars.get("batch_size", 8))
+    epochs = int(pars.get("epochs", 50))
+    patience = int(pars.get("patience", 30))
+    warmup_epochs = int(pars.get("warmup_epochs", 3))
+    base_lr = float(pars.get("lr", 5e-5))
+    decay = float(pars.get("weight_decay", 1e-3))
+    min_lr_ratio = float(pars.get("min_lr_ratio", 0.1))
+    min_delta = float(pars.get("min_delta", 1e-4))
+    if epochs < 1 or patience < 1 or not 0 <= warmup_epochs < epochs:
+        raise ValueError("Require epochs/patience >=1 and 0 <= warmup_epochs < epochs")
+    if batch_size < 2:
+        raise ValueError("CataPro BatchNorm requires batch_size >= 2")
+    if not 0 <= min_delta < float("inf"):
+        raise ValueError("min_delta must be finite and nonnegative")
+    batches_per_epoch = len(batches_without_singleton(len(ds_tr), batch_size, seed))
+    total_steps = epochs * batches_per_epoch
+    warmup_steps = warmup_epochs * batches_per_epoch
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    table, vectors = pretrained_vectors(cfg, vocab)
+    model = create_model(cfg, vocab, nmax, table)
     if init_catapro:
-        weights=torch.load(init_catapro,map_location="cpu",weights_only=True)
-        model.initialize_catapro(weights.get("state_dict",weights))
-    device=device_for(cfg)
+        weights = torch.load(init_catapro, map_location="cpu", weights_only=True)
+        model.initialize_catapro(weights.get("state_dict", weights))
+    device = device_for(cfg)
     model.to(device)
-    opt=torch.optim.AdamW(model.parameters(),lr=float(pars.get("lr",1e-4)),
-                          weight_decay=float(pars.get("weight_decay",1e-5)))
-    batch_size=int(pars.get("batch_size",64))
-    best=math.inf; best_state=None; best_epoch=None; stale=0; history=[]
-    for epoch in range(1,int(pars.get("epochs",150))+1):
-        model.train()
-        losses=[]
-        batches=batches_without_singleton(len(ds_tr),batch_size,seed+epoch)
-        for batch in DataLoader(ds_tr,batch_sampler=batches):
-            batch=move(batch,device)
-            opt.zero_grad(set_to_none=True)
-            pred=model(batch)
-            if pred.shape != batch["target"].shape:
-                raise ValueError("Target shape mismatch; broadcasting forbidden")
-            loss=((pred-batch["target"])**2).mean()
-            if not torch.isfinite(loss):
-                raise ValueError("Nonfinite training loss")
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(),float(pars.get("grad_clip",5)))
-            opt.step()
-            losses.append(loss.item())
-        predicted=inference(model,ds_va,device,batch_size)
-        val=metrics(ds_va.labels.numpy(),predicted)
-        row={"epoch":epoch,"training_loss":float(np.mean(losses)),**val}
-        history.append(row);print(json.dumps(row),flush=True)
-        if val["rmse"] < best-float(pars.get("min_delta",1e-4)):
-            best=val["rmse"];best_epoch=epoch;stale=0
-            best_state={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
-        else:
-            stale+=1
-            if stale >= int(pars.get("patience",20)):
+    opt = build_optimizer(model, base_lr, decay)
+
+    output.mkdir(parents=True, exist_ok=False)
+    history_csv = output / "history.csv"
+    fields = [
+        "epoch", "train_online_loss", "train_loss", "train_rmse",
+        "val_loss", "val_rmse", "val_mae", "val_r2", "val_pcc",
+        "lr_first", "lr_last", "best_epoch_so_far", "early_stop_counter",
+    ]
+    history = []
+    best = math.inf
+    best_epoch = None
+    stale = 0
+    global_step = 0
+    best_val_predictions = None
+    sequence_hashes = [hashlib.sha256(r["sequence"].encode()).hexdigest() for r in tr + va]
+    cluster_ids = sorted({r["cluster_id"] for r in tr + va if r["cluster_id"]})
+
+    with history_csv.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fields)
+        writer.writeheader()
+        file.flush()
+        for epoch in range(1, epochs + 1):
+            model.train()
+            online_squared_sum = 0.0
+            online_n = 0
+            lr_first = None
+            lr_last = None
+            batches = batches_without_singleton(len(ds_tr), batch_size, seed + epoch)
+            for batch in DataLoader(ds_tr, batch_sampler=batches):
+                batch = move(batch, device)
+                global_step += 1
+                current_lr = scheduled_lr(
+                    global_step, total_steps, warmup_steps, base_lr, min_lr_ratio
+                )
+                for group in opt.param_groups:
+                    group["lr"] = current_lr
+                if lr_first is None:
+                    lr_first = current_lr
+                lr_last = current_lr
+                opt.zero_grad(set_to_none=True)
+                pred = model(batch)
+                if pred.shape != batch["target"].shape:
+                    raise ValueError("Target shape mismatch; broadcasting forbidden")
+                squared = torch.square(pred - batch["target"])
+                loss = squared.mean()
+                if not torch.isfinite(loss):
+                    raise ValueError("Nonfinite training loss")
+                online_squared_sum += float(squared.detach().sum().item())
+                online_n += batch["target"].numel()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), float(pars.get("grad_clip", 5))
+                )
+                opt.step()
+
+            # Same eval() + complete-data rules for end-of-epoch train and val.
+            train_pred = inference(model, ds_tr, device, batch_size)
+            val_pred = inference(model, ds_va, device, batch_size)
+            train_values = metrics(ds_tr.labels.numpy(), train_pred)
+            val_values = metrics(ds_va.labels.numpy(), val_pred)
+            improved = val_values["rmse"] < best - min_delta
+            if improved:
+                best = val_values["rmse"]
+                best_epoch = epoch
+                stale = 0
+                best_val_predictions = np.array(val_pred, copy=True)
+                state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                checkpoint = {
+                    "state_dict": state, "vocab": vocab, "nmax": nmax,
+                    "source": cfg["model"]["source"],
+                    "variant": cfg["model"]["variant"],
+                    "dropout": float(cfg["model"].get("dropout", 0.1)),
+                    "fc_dropout": float(cfg["model"].get("fc_dropout", 0.0)),
+                    "init_scheme": cfg["model"].get("init_scheme", "legacy"),
+                    "layers": int(cfg["model"].get("transformer_layers", 1)),
+                    "train_val_sequence_hashes": sequence_hashes,
+                    "train_val_clusters": cluster_ids,
+                    "best_epoch": best_epoch,
+                    "validation_rmse": best,
+                    "seed": seed,
+                    "optimizer": "AdamW",
+                    "training_hyperparameters": {
+                        "batch_size": batch_size, "epochs": epochs,
+                        "warmup_epochs": warmup_epochs, "lr": base_lr,
+                        "min_lr_ratio": min_lr_ratio, "weight_decay": decay,
+                        "patience": patience, "min_delta": min_delta,
+                    },
+                }
+                torch.save(checkpoint, output / "best.pt")
+            else:
+                stale += 1
+            row = {
+                "epoch": epoch,
+                "train_online_loss": online_squared_sum / online_n,
+                "train_loss": train_values["loss"],
+                "train_rmse": train_values["rmse"],
+                "val_loss": val_values["loss"],
+                "val_rmse": val_values["rmse"],
+                "val_mae": val_values["mae"],
+                "val_r2": val_values["r2"],
+                "val_pcc": val_values["pcc"],
+                "lr_first": lr_first, "lr_last": lr_last,
+                "best_epoch_so_far": best_epoch,
+                "early_stop_counter": stale,
+            }
+            history.append(row)
+            writer.writerow(row)
+            file.flush()
+            print(json.dumps(row, ensure_ascii=False, allow_nan=False), flush=True)
+            if stale >= patience:
                 break
-    if best_state is None:
+
+    if best_epoch is None or best_val_predictions is None:
         raise RuntimeError("No finite validation model")
-    output.mkdir(parents=True,exist_ok=False)
-    training_sequences=[hashlib.sha256(r["sequence"].encode()).hexdigest() for r in tr+va]
-    checkpoint={"state_dict":best_state,"vocab":vocab,"nmax":nmax,
-                "source":cfg["model"]["source"],"variant":cfg["model"]["variant"],
-                "dropout":float(cfg["model"].get("dropout",.1)),
-                "layers":int(cfg["model"].get("transformer_layers",1)),
-                "train_val_sequence_hashes":training_sequences,
-                "train_val_clusters":sorted({r["cluster_id"] for r in tr+va if r["cluster_id"]}),
-                "best_epoch":best_epoch,"validation_rmse":best}
-    torch.save(checkpoint,output/"best.pt")
-    report={"best_epoch":best_epoch,"validation_rmse":best,"nmax":nmax,
-            "vocab_size":len(vocab),"training_history":history,
-            "train_audit":audit(tr,hits,vocab,nmax,cfg["model"]["variant"]=="ordered",set(vec) if vec else None),
-            "validation_audit":audit(va,hits,vocab,nmax,cfg["model"]["variant"]=="ordered",set(vec) if vec else None)}
-    (output/"report.json").write_text(json.dumps(report,indent=2))
+    with (output / "best_valid_predictions.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as file:
+        writer = csv.writer(file)
+        writer.writerow(["row_uid", "observed", "predicted"])
+        for sample, pred in zip(va, best_val_predictions):
+            writer.writerow([sample["row_uid"], sample["target"], float(pred)])
+    report = {
+        "best_epoch": best_epoch, "validation_rmse": best,
+        "nmax": nmax, "vocab_size": len(vocab),
+        "training_history": history,
+        "train_audit": audit(tr, hits, vocab, nmax, ordered,
+                             set(vectors) if vectors else None),
+        "validation_audit": audit(va, hits, vocab, nmax, ordered,
+                                  set(vectors) if vectors else None),
+        "history_csv": str(history_csv),
+        "train_loss_definition": "eval-mode full-train MSE at epoch end",
+        "train_online_loss_definition": "sample-weighted train-mode MSE during updates",
+        "validation_selection": "minimum complete-validation RMSE",
+    }
+    (output / "report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
     return report
 
 
@@ -197,8 +366,12 @@ def evaluate(cfg,checkpoint,output):
         raise ValueError("Test leakage detected")
     hits=read_hits(resource(cfg,"hits_csv"))
     ds=dataset(cfg,te,hits,saved["vocab"],saved["nmax"])
-    model=PfamCataPro(len(saved["vocab"]),saved["nmax"],saved["variant"]=="ordered",
-                       dropout=saved["dropout"],layers=saved["layers"])
+    model=PfamCataPro(
+        len(saved["vocab"]), saved["nmax"], saved["variant"]=="ordered",
+        dropout=saved["dropout"], layers=saved["layers"],
+        fc_dropout=saved.get("fc_dropout",0.0),
+        init_scheme=saved.get("init_scheme","legacy"),
+    )
     model.load_state_dict(saved["state_dict"],strict=True)
     device=device_for(cfg);model.to(device)
     predictions=inference(model,ds,device,int(cfg.get("training",{}).get("batch_size",64)))

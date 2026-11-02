@@ -20,23 +20,25 @@ class PfamEncoder(nn.Module):
 
     def __init__(self, vocab_size: int, nmax: int, ordered: bool,
                  pretrained: torch.Tensor | None = None, dropout: float = 0.1,
-                 layers: int = 1, heads: int = 4):
+                 layers: int = 1, heads: int = 4,
+                 fc_dropout: float = 0.0, init_scheme: str = "legacy"):
         super().__init__()
         if vocab_size < 3 or nmax < 1 or 256 % heads or layers < 1:
             raise ValueError("Invalid vocab size, Nmax, number of heads or layers")
+        if not 0 <= fc_dropout < 1:
+            raise ValueError("fc_dropout must be in [0, 1)")
+        if init_scheme not in ("legacy", "xavier"):
+            raise ValueError("init_scheme must be 'legacy' or 'xavier'")
         self.vocab_size = vocab_size
         self.nmax = nmax
         self.ordered = ordered
         self.embedding = nn.Embedding(vocab_size, 100, padding_idx=0)
         nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
-        with torch.no_grad():
-            self.embedding.weight[0].zero_()
-            if pretrained is not None:
-                if pretrained.shape != (vocab_size, 100):
-                    raise ValueError("pretrained lookup must have shape [vocab_size,100]")
-                if not torch.isfinite(pretrained).all():
-                    raise ValueError("pretrained lookup contains nonfinite values")
-                self.embedding.weight[2:].copy_(pretrained[2:])
+        if pretrained is not None:
+            if pretrained.shape != (vocab_size, 100):
+                raise ValueError("pretrained lookup must have shape [vocab_size,100]")
+            if not torch.isfinite(pretrained).all():
+                raise ValueError("pretrained lookup contains nonfinite values")
         self.projection = nn.Linear(100, PFAM_OUT_DIM)
         self.position = nn.Embedding(nmax, PFAM_OUT_DIM) if ordered else None
         if self.position is not None:
@@ -48,8 +50,33 @@ class PfamEncoder(nn.Module):
         )
         self.encoder = nn.TransformerEncoder(layer, num_layers=layers,
                                              enable_nested_tensor=False)
-        self.out = nn.Sequential(nn.Linear(nmax * PFAM_OUT_DIM, PFAM_OUT_DIM),
-                                 nn.LayerNorm(PFAM_OUT_DIM), nn.ReLU())
+        self.out = nn.Sequential(
+            nn.Linear(nmax * PFAM_OUT_DIM, PFAM_OUT_DIM),
+            nn.LayerNorm(PFAM_OUT_DIM), nn.ReLU(), nn.Dropout(fc_dropout),
+        )
+        if init_scheme == "xavier":
+            self._initialize_xavier()
+        with torch.no_grad():
+            self.embedding.weight[0].zero_()
+            if pretrained is not None:
+                self.embedding.weight[2:].copy_(pretrained[2:])
+
+    def _initialize_xavier(self) -> None:
+        """Initialize only newly constructed Pfam trainable weight matrices."""
+        nn.init.xavier_uniform_(self.embedding.weight)
+        if self.position is not None:
+            nn.init.xavier_uniform_(self.position.weight)
+        for block in (self.projection, self.encoder, self.out):
+            for module in block.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.xavier_uniform_(module.weight)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+                elif isinstance(module, nn.MultiheadAttention):
+                    if module.in_proj_weight is not None:
+                        nn.init.xavier_uniform_(module.in_proj_weight)
+                    if module.in_proj_bias is not None:
+                        nn.init.zeros_(module.in_proj_bias)
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
         if indices.ndim != 2 or indices.shape[1] != self.nmax:
@@ -85,14 +112,23 @@ class PfamCataPro(nn.Module):
 
     def __init__(self, vocab_size: int, nmax: int, ordered: bool,
                  pretrained: torch.Tensor | None = None, dropout: float = 0.1,
-                 layers: int = 1):
+                 layers: int = 1, fc_dropout: float = 0.0,
+                 init_scheme: str = "legacy"):
         super().__init__()
-        self.pfam = PfamEncoder(vocab_size, nmax, ordered, pretrained=pretrained,
-                                dropout=dropout, layers=layers)
+        self.pfam = PfamEncoder(
+            vocab_size, nmax, ordered, pretrained=pretrained,
+            dropout=dropout, layers=layers,
+            fc_dropout=fc_dropout, init_scheme=init_scheme,
+        )
         self.catapro = NewKcat(ModelConfig(atom_dim=1, bond_dim=1,
                                             mode="baseline", dropout=0.0))
         # Existing modules are unmodified: only this model's fusion width changes.
         self.catapro.decoder[0] = nn.Linear(GLOBAL_FEATURE_DIM + PFAM_OUT_DIM, 256)
+        if init_scheme == "xavier":
+            # Only the newly sized fusion layer is reinitialized; original CataPro
+            # BatchNorm and output-layer initializations stay unchanged.
+            nn.init.xavier_uniform_(self.catapro.decoder[0].weight)
+            nn.init.zeros_(self.catapro.decoder[0].bias)
 
     def initialize_catapro(self, original_state: dict) -> None:
         """Copy official CataPro parameters; new input columns start at zero."""
